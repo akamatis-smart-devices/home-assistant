@@ -1,0 +1,121 @@
+blueprint:
+  name: "Akamatis HPS v4PL - PIR and LTR329 light, radar hold"
+  description: >-
+    Turn a light on when the HPS v4PL PIR detects motion and its LTR329
+    illuminance is below the selected threshold (80 lx by default). Keep it
+    on while the LD2410 radar reports presence. Turn it off after both PIR
+    motion and radar presence have been clear for the selected delay. The
+    PIR-clear trigger also handles a person who moves briefly but is never
+    detected by the radar. Illuminance only gates turn-on, not turn-off.
+  domain: automation
+  author: Akamatis
+  homeassistant:
+    min_version: "2026.8.0"
+  input:
+    pir_motion:
+      name: 'PIR motion — search "PIR Motion"'
+      description: >-
+        Select 020: PIR Motion on your HPS v4PL. Do not select Radar Moving
+        Target, which is also classed as motion.
+      selector:
+        entity:
+          filter:
+            integration: esphome
+            domain: binary_sensor
+            device_class: motion
+            device:
+              manufacturer: Akamatis
+    radar_presence:
+      name: 'Radar presence — search "Radar Presence"'
+      description: Select the LD2410 Radar Presence entity on the same HPS v4PL.
+      selector:
+        entity:
+          filter:
+            domain: binary_sensor
+    illuminance_sensor:
+      name: 'Ambient light — search "Ambient Light"'
+      description: Select the LTR329 Ambient Light entity on the same HPS v4PL, measured in lx.
+      selector:
+        entity:
+          filter:
+            domain: sensor
+    illuminance_threshold:
+      name: Turn-on illuminance threshold
+      description: >-
+        PIR motion turns the light on only when illuminance is strictly below
+        this value. At 80 lx or higher, it stays off.
+      default: 80
+      selector:
+        number:
+          min: 0
+          max: 1000
+          step: 1
+          unit_of_measurement: lx
+    light_target:
+      name: Light to control
+      selector:
+        target:
+          entity:
+            domain: light
+    vacancy_delay:
+      name: Empty-room delay
+      description: >-
+        Both PIR motion and radar presence must be clear for this many seconds
+        before the light turns off. Start with 30 seconds.
+      default: 30
+      selector:
+        number:
+          min: 0
+          max: 1800
+          step: 1
+          unit_of_measurement: seconds
+
+triggers:
+  - trigger: state
+    id: pir_detected
+    entity_id: !input pir_motion
+    to: "on"
+
+  - trigger: state
+    id: radar_clear
+    entity_id: !input radar_presence
+    to: "off"
+    for:
+      seconds: !input vacancy_delay
+
+  - trigger: state
+    id: pir_clear
+    entity_id: !input pir_motion
+    to: "off"
+    for:
+      seconds: !input vacancy_delay
+
+actions:
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: pir_detected
+        sequence:
+          - condition: numeric_state
+            entity_id: !input illuminance_sensor
+            below: !input illuminance_threshold
+          - action: light.turn_on
+            target: !input light_target
+    default:
+      # Either clear trigger can initiate the off action. Both sensors must
+      # have remained clear for the whole delay, not just at this instant.
+      - condition: state
+        entity_id: !input pir_motion
+        state: "off"
+        for:
+          seconds: !input vacancy_delay
+      - condition: state
+        entity_id: !input radar_presence
+        state: "off"
+        for:
+          seconds: !input vacancy_delay
+      - action: light.turn_off
+        target: !input light_target
+
+mode: restart
+max_exceeded: silent
