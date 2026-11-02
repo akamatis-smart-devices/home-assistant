@@ -1,0 +1,138 @@
+blueprint:
+  name: "Akamatis HPS v4PL - PIR and radar confirmation, lights and fan"
+  description: >-
+    Turn lights and an optional fan on when the HPS v4PL PIR detects motion
+    and the LD2410 radar confirms presence within the selected window
+    (3 seconds by default). Turn them off after PIR motion has been clear
+    for the selected delay (15 minutes by default). Each new PIR detection
+    cancels the inactivity countdown. Radar presence alone does not keep
+    the lights or fan on.
+
+    Useful when a running fan keeps radar presence active. A person sitting
+    still without detectable PIR motion may trigger shutoff. False PIR
+    detections can extend the run time.
+
+    Manually activated outputs are also subject to automatic shutoff.
+    Pending countdowns do not survive Home Assistant restarts or automation
+    reloads; a fresh PIR cycle is needed afterward. No helpers are required.
+  domain: automation
+  author: Akamatis
+  homeassistant:
+    min_version: "2026.8.0"
+  input:
+    pir_sensor:
+      name: 'PIR Sensor — start typing "pir motion"'
+      description: Select the PIR Motion entity on your HPS v4PL.
+      selector:
+        entity:
+          filter:
+            integration: esphome
+            domain: binary_sensor
+            device_class: motion
+            device:
+              manufacturer: Akamatis
+
+    radar_sensor:
+      name: 'mmWave Radar — start typing "radar presence"'
+      description: Select the LD2410 Radar Presence entity on the same HPS v4PL.
+      selector:
+        entity:
+          filter:
+            domain: binary_sensor
+
+    light_entities:
+      name: Lights or switches to control
+      description: Select one or more lights, light groups, or switches controlling lights.
+      selector:
+        entity:
+          multiple: true
+          filter:
+            domain:
+              - light
+              - switch
+
+    fan_entities:
+      name: Fans or switches to control (optional)
+      description: Select fans or switches controlling fans. Leave empty for lights only.
+      default: []
+      selector:
+        entity:
+          multiple: true
+          filter:
+            domain:
+              - fan
+              - switch
+
+    confirmation_window:
+      name: Radar confirmation window
+      description: >-
+        After PIR motion, wait up to this long for radar presence before
+        turning on. If radar is already present, turn on immediately.
+        Start with 3 seconds. Use a value above zero.
+      default:
+        seconds: 3
+      selector:
+        duration: {}
+
+    inactivity_time:
+      name: PIR inactivity timeout
+      description: >-
+        PIR motion must remain clear for this long before the lights and fan
+        turn off. Each new PIR detection cancels the countdown. Radar does
+        not extend this delay. Start with 15 minutes. Use a value above zero.
+      default:
+        minutes: 15
+      selector:
+        duration: {}
+
+variables:
+  radar_entity: !input radar_sensor
+  selected_lights: !input light_entities
+  selected_fans: !input fan_entities
+  output_entities: "{{ (selected_lights + selected_fans) | unique | list }}"
+
+triggers:
+  - trigger: state
+    id: motion
+    entity_id: !input pir_sensor
+    from: "off"
+    to: "on"
+
+  - trigger: state
+    id: inactivity
+    entity_id: !input pir_sensor
+    to: "off"
+    for: !input inactivity_time
+
+actions:
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: motion
+        sequence:
+          # Accept radar presence that is already on, or wait for it.
+          - wait_template: "{{ is_state(radar_entity, 'on') }}"
+            timeout: !input confirmation_window
+            continue_on_timeout: false
+
+          - action: homeassistant.turn_on
+            target:
+              entity_id: "{{ output_entities }}"
+
+      - conditions:
+          - condition: trigger
+            id: inactivity
+        sequence:
+          # PIR must have remained clear for the whole delay.
+          # Ignore radar presence here so a fan cannot maintain occupancy.
+          - condition: state
+            entity_id: !input pir_sensor
+            state: "off"
+            for: !input inactivity_time
+
+          - action: homeassistant.turn_off
+            target:
+              entity_id: "{{ output_entities }}"
+
+mode: restart
+max_exceeded: silent
